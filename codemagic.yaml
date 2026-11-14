@@ -1,0 +1,213 @@
+workflows:
+  apk:
+    name: Build APK
+    max_build_duration: 30
+    scripts:
+      - name: Criar projeto e compilar
+        script: |
+          #!/usr/bin/env bash
+          set -e
+          mkdir -p app/src/main/java/com/example/topblocker app/src/main/res/values app/src/main/res/xml
+          cat > settings.gradle.kts << 'EOF_0'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "TopBlocker"
+          include(":app")
+          EOF_0
+          cat > build.gradle.kts << 'EOF_1'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_1
+          cat > gradle.properties << 'EOF_2'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          EOF_2
+          cat > app/build.gradle.kts << 'EOF_3'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.topblocker"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.topblocker"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF_3
+          cat > app/src/main/AndroidManifest.xml << 'EOF_4'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="Top Blocker">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".TopBlockerService"
+                      android:exported="true"
+                      android:label="Top Blocker"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF_4
+          cat > app/src/main/res/values/strings.xml << 'EOF_5'
+          <resources>
+              <string name="desc_servico">Bloqueia toques na faixa superior da tela</string>
+          </resources>
+          EOF_5
+          cat > app/src/main/res/xml/accessibility_service_config.xml << 'EOF_6'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/desc_servico" />
+          EOF_6
+          cat > app/src/main/java/com/example/topblocker/MainActivity.kt << 'EOF_7'
+          package com.example.topblocker
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.SeekBar
+          import android.widget.Switch
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val prefs = getSharedPreferences("cfg", MODE_PRIVATE)
+                  val pad = (24 * resources.displayMetrics.density).toInt()
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(pad, pad * 2, pad, pad)
+                  }
+                  val label = TextView(this)
+                  val bar = SeekBar(this).apply {
+                      max = 200
+                      progress = prefs.getInt("altura", 36)
+                  }
+                  fun atualiza(v: Int) { label.text = "Altura da faixa bloqueada: $v dp" }
+                  atualiza(bar.progress)
+                  bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                          val v = maxOf(p, 10)
+                          atualiza(v)
+                          prefs.edit().putInt("altura", v).apply()
+                      }
+                      override fun onStartTrackingTouch(s: SeekBar?) {}
+                      override fun onStopTrackingTouch(s: SeekBar?) {}
+                  })
+                  val sw = Switch(this).apply {
+                      text = "Mostrar faixa em vermelho (para ver a area)"
+                      isChecked = prefs.getBoolean("mostrar", false)
+                      setOnCheckedChangeListener { _, c -> prefs.edit().putBoolean("mostrar", c).apply() }
+                  }
+                  val btn = Button(this).apply {
+                      text = "Abrir configuracoes de acessibilidade"
+                      setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                  }
+                  root.addView(label)
+                  root.addView(bar)
+                  root.addView(sw)
+                  root.addView(btn)
+                  setContentView(root)
+              }
+          }
+          EOF_7
+          cat > app/src/main/java/com/example/topblocker/TopBlockerService.kt << 'EOF_8'
+          package com.example.topblocker
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.SharedPreferences
+          import android.graphics.PixelFormat
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+
+          class TopBlockerService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
+
+              private var faixa: View? = null
+              private var wm: WindowManager? = null
+              private lateinit var prefs: SharedPreferences
+              private lateinit var params: WindowManager.LayoutParams
+
+              private fun alturaPx(): Int =
+                  (prefs.getInt("altura", 36) * resources.displayMetrics.density).toInt()
+
+              private fun aplicaCor() {
+                  val cor = if (prefs.getBoolean("mostrar", false)) 0x55FF0000 else 0x01000000
+                  faixa?.setBackgroundColor(cor)
+              }
+
+              override fun onServiceConnected() {
+                  prefs = getSharedPreferences("cfg", MODE_PRIVATE)
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  params = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      alturaPx(),
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  ).apply { gravity = Gravity.TOP }
+                  faixa = View(this).apply { setOnTouchListener { _, _ -> true } }
+                  aplicaCor()
+                  wm?.addView(faixa, params)
+                  prefs.registerOnSharedPreferenceChangeListener(this)
+              }
+
+              override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
+                  params.height = alturaPx()
+                  aplicaCor()
+                  faixa?.let { wm?.updateViewLayout(it, params) }
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              override fun onDestroy() {
+                  prefs.unregisterOnSharedPreferenceChangeListener(this)
+                  faixa?.let { wm?.removeView(it) }
+                  faixa = null
+                  super.onDestroy()
+              }
+          }
+          EOF_8
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          java -version
+          curl -sSL -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q gradle.zip
+          ./gradle-8.7/bin/gradle assembleDebug --no-daemon
+    artifacts:
+      - app/build/outputs/apk/debug/app-debug.apk
